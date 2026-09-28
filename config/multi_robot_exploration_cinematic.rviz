@@ -1,0 +1,208 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    # ── Grid ──
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Plane Cell Count: 100
+      Color: 30; 35; 48
+      Alpha: 0.15
+      Reference Frame: map
+      Enabled: true
+
+    # ── Merged Map ──
+    - Class: rviz_default_plugins/Map
+      Name: Merged Map
+      Topic:
+        Value: /map
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Enabled: true
+      Alpha: 0.7
+      Draw Behind: true
+
+    # ── Robot 1 Map ──
+    - Class: rviz_default_plugins/Map
+      Name: Robot1 Map
+      Topic:
+        Value: /robot1/map
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Enabled: false
+      Alpha: 0.5
+      Color Scheme: costmap
+
+    # ── Robot 2 Map ──
+    - Class: rviz_default_plugins/Map
+      Name: Robot2 Map
+      Topic:
+        Value: /robot2/map
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Enabled: false
+      Alpha: 0.5
+      Color Scheme: costmap
+
+    # ── Robot 1 TF Model ──
+    - Class: rviz_default_plugins/RobotModel
+      Name: Robot1 Model
+      Robot Description Topic: /robot1/robot_description
+      TF Prefix: robot1
+      Enabled: true
+
+    # ── Robot 2 TF Model ──
+    - Class: rviz_default_plugins/RobotModel
+      Name: Robot2 Model
+      Robot Description Topic: /robot2/robot_description
+      TF Prefix: robot2
+      Enabled: true
+
+    # ── Robot 1 LaserScan ──
+    - Class: rviz_default_plugins/LaserScan
+      Name: Robot1 Scan
+      Topic:
+        Value: /robot1/scan
+      Enabled: true
+      Size (m): 0.03
+      Color Transformer: FlatColor
+      Color: 0; 240; 255
+
+    # ── Robot 2 LaserScan ──
+    - Class: rviz_default_plugins/LaserScan
+      Name: Robot2 Scan
+      Topic:
+        Value: /robot2/scan
+      Enabled: true
+      Size (m): 0.03
+      Color Transformer: FlatColor
+      Color: 255; 85; 0
+
+    # ══════════════════════════════════════════════════════════════════
+    # FRONTIER EXPLORATION VISUALIZATION
+    # ══════════════════════════════════════════════════════════════════
+
+    # ── Frontier Markers (spheres at each detected frontier) ──
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Frontier Markers
+      Topic:
+        Value: /frontiers_markers
+      Enabled: true
+
+    # ── Goal Markers (arrows + labels at assigned goals) ──
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Goal Markers
+      Topic:
+        Value: /frontier_goals_markers
+      Enabled: true
+
+    # ══════════════════════════════════════════════════════════════════
+    # COSTMAPS (local = dynamic obstacles, global = planning)
+    # ══════════════════════════════════════════════════════════════════
+
+    # ── Robot 1 Local Costmap (shows dynamic obstacle detections) ──
+    - Class: rviz_default_plugins/Map
+      Name: Robot1 Local Costmap
+      Topic:
+        Value: /robot1/local_costmap/costmap
+      Enabled: true
+      Alpha: 0.45
+      Color Scheme: costmap
+
+    # ── Robot 2 Local Costmap ──
+    - Class: rviz_default_plugins/Map
+      Name: Robot2 Local Costmap
+      Topic:
+        Value: /robot2/local_costmap/costmap
+      Enabled: true
+      Alpha: 0.45
+      Color Scheme: costmap
+
+    # ── Robot 1 Global Costmap ──
+    - Class: rviz_default_plugins/Map
+      Name: Robot1 Global Costmap
+      Topic:
+        Value: /robot1/global_costmap/costmap
+      Enabled: false
+      Alpha: 0.3
+      Color Scheme: costmap
+
+    # ── Robot 2 Global Costmap ──
+    - Class: rviz_default_plugins/Map
+      Name: Robot2 Global Costmap
+      Topic:
+        Value: /robot2/global_costmap/costmap
+      Enabled: false
+      Alpha: 0.3
+      Color Scheme: costmap
+
+    # ══════════════════════════════════════════════════════════════════
+    # PLANNED PATHS
+    # ══════════════════════════════════════════════════════════════════
+
+    # ── Robot 1 Planned Path ──
+    - Class: rviz_default_plugins/Path
+      Name: Robot1 Plan
+      Topic:
+        Value: /robot1/plan
+      Enabled: true
+      Line Style: Billboards
+      Line Width: 0.08
+      Color: 0; 240; 255
+      Alpha: 1.0
+
+    # ── Robot 2 Planned Path ──
+    - Class: rviz_default_plugins/Path
+      Name: Robot2 Plan
+      Topic:
+        Value: /robot2/plan
+      Enabled: true
+      Line Style: Billboards
+      Line Width: 0.08
+      Color: 255; 85; 0
+      Alpha: 1.0
+
+    # ── TF Frames ──
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Arrows: false
+      Show Axes: true
+      Show Names: false
+      Frame Timeout: 15
+      Frames:
+        map:
+          Value: true
+        robot1/base_footprint:
+          Value: true
+        robot2/base_footprint:
+          Value: true
+        robot1/map:
+          Value: false
+        robot2/map:
+          Value: false
+        robot1/odom:
+          Value: false
+        robot2/odom:
+          Value: false
+
+  Global Options:
+    Background Color: 5; 7; 14
+    Fixed Frame: map
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/SetGoal
+      Topic: /goal_pose
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: TopDownOrtho
+      Scale: 80
+      X: 0
+      Y: 0

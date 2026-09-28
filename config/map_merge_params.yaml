@@ -1,0 +1,22 @@
+map_merge_node:
+  ros__parameters:
+    robot_names: ["robot1", "robot2"]
+    merged_frame: "map"
+    publish_rate: 2.0
+    merge_resolution: -1.0   # -1.0 => auto (min of source resolutions)
+
+    # IMPORTANT: these are 0, not the spawn poses.
+    # gazebo_ros's diff_drive plugin initializes /odom to the robot's true
+    # spawn pose in the Gazebo world (confirmed: /robot2/odom reported
+    # x=2.00, y=0.50, matching its spawn pose exactly). Since slam_toolbox's
+    # map frame is built on top of that odom, each robot's own map frame is
+    # ALREADY expressed in the shared world frame — applying the spawn pose
+    # again here would double-offset it, which is what caused the two
+    # separate/duplicated rooms instead of one merged one.
+    robot1_x: 0.0
+    robot1_y: 0.0
+    robot1_yaw: 0.0
+
+    robot2_x: 0.0
+    robot2_y: 0.0
+    robot2_yaw: 0.0
