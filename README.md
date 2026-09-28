@@ -18,6 +18,7 @@
 - [Configuration Reference](#configuration-reference)
 - [RViz Visualization](#rviz-visualization)
 - [Troubleshooting](#troubleshooting)
+- [RL Frontier Selection (experimental)](#rl-frontier-selection-experimental)
 
 ---
 
@@ -103,6 +104,8 @@ Every file in this package and what it does:
 | [`map_merge_node.py`](multi_robot_exploration/map_merge_node.py) | Fuses `/robot1/map` + `/robot2/map` → `/map` using known spawn transforms. Vectorized NumPy rasterization | ✅ Active |
 | [`generate_random_world.py`](multi_robot_exploration/generate_random_world.py) | Procedurally generates Gazebo SDF worlds with random box/cylinder obstacles, boundary walls, and collision-free spawn zones | ✅ Active |
 | [`waypoint_navigator.py`](multi_robot_exploration/waypoint_navigator.py) | Demo node — sends pre-defined waypoints to showcase map merging without frontier logic | ✅ Demo |
+| [`frontier_utils.py`](multi_robot_exploration/frontier_utils.py) | Frontier detection + deduplication shared by the coordinator and the RL stack | ✅ Active |
+| [`rl/`](multi_robot_exploration/rl/) | RL frontier selection: Gym env on the headless Gazebo stack, training, evaluation, and the `rl_frontier_coordinator` node — see [docs/rl_training.md](docs/rl_training.md) | 🧪 Experimental |
 | [`__init__.py`](multi_robot_exploration/__init__.py) | Package init | — |
 
 ### Launch Files (`launch/`)
@@ -115,6 +118,8 @@ Every file in this package and what it does:
 | [`nav2_bringup_multi.launch.py`](launch/nav2_bringup_multi.launch.py) | Full Nav2 stack per robot (controller, planner, behavior, BT navigator, smoother, lifecycle manager with autostart) | **4th** |
 | [`frontier_exploration.launch.py`](launch/frontier_exploration.launch.py) | `frontier_coordinator` node — the exploration brain | **5th** |
 | [`waypoint_demo.launch.py`](launch/waypoint_demo.launch.py) | `waypoint_navigator` demo (alternative to frontier exploration; needs `USE_TB3_WORLD=1`) | Alt to 5th |
+| [`rl_sim_stack.launch.py`](launch/rl_sim_stack.launch.py) | Whole stack (Gazebo + SLAM + merge + Nav2) in one headless launch, no exploration brain — used by RL training | RL |
+| [`rl_frontier_exploration.launch.py`](launch/rl_frontier_exploration.launch.py) | `rl_frontier_coordinator` with a trained policy (`model_path:=...`) | Alt to 5th |
 | [`explore_multi.launch.py`](launch/explore_multi.launch.py) | `explore_lite` per robot (alternative off-the-shelf exploration, no coordination) | Alt to 5th |
 
 ### Configuration (`config/`)
@@ -141,6 +146,7 @@ Every file in this package and what it does:
 | File | Contents |
 |------|----------|
 | [`gazebo_visual_guide.md`](docs/gazebo_visual_guide.md) | Guide for disabling LiDAR ray visualization in Gazebo |
+| [`rl_training.md`](docs/rl_training.md) | RL frontier selection: design, install, training, evaluation, deployment |
 | [`rviz_visual_enhancement_guide.md`](docs/rviz_visual_enhancement_guide.md) | Color palette and styling guide for cinematic RViz demos |
 
 ### Test Files (`test/`)
@@ -403,3 +409,20 @@ The exploration brain, implementing:
 ## License
 
 Apache-2.0
+
+---
+
+## RL Frontier Selection (experimental)
+
+A reinforcement-learning agent can replace the coordinator's hand-tuned frontier cost. It trains on the **real stack**: headless Gazebo, SLAM, map merge and Nav2, with a new random world every episode. Full guide: **[docs/rl_training.md](docs/rl_training.md)**.
+
+```bash
+# inside the distrobox, once
+pip3 install --user torch --index-url https://download.pytorch.org/whl/cpu
+pip3 install --user -r ~/swarm/requirements-rl.txt && pip3 uninstall -y setuptools
+swarm_build
+
+ros2 run multi_robot_exploration rl_evaluate --policy heuristic        # baseline
+ros2 run multi_robot_exploration rl_train --num-envs 2                 # train
+ros2 run multi_robot_exploration rl_evaluate --policy ~/swarm_rl_runs/<run>/frontier_ppo_final.zip
+```

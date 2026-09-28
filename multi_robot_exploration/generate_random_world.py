@@ -13,10 +13,12 @@ def generate_random_world(
     obstacle_clearance=0.8,
     robot_clearance=0.8,
     robot_separation=2.0,
-    seed=None
+    seed=None,
+    real_time_factor=1.0
 ):
     """
     Generates a random Gazebo world with walls, obstacles, and valid spawn poses.
+    real_time_factor > 1 asks Gazebo to simulate faster than real time.
     
     Returns:
         tuple: (path_to_world_file, [(x1, y1), (x2, y2)])
@@ -102,7 +104,7 @@ def generate_random_world(
                 spawns.append((arena_size_x/2 - 1.0, arena_size_y/2 - 1.0))
 
     # Build SDF
-    sdf = """<?xml version="1.0"?>
+    sdf = f"""<?xml version="1.0"?>
 <sdf version="1.6">
   <world name="default">
     <include>
@@ -118,9 +120,9 @@ def generate_random_world(
       <grid>false</grid>
     </scene>
     <physics type="ode">
-      <real_time_update_rate>1000.0</real_time_update_rate>
+      <real_time_update_rate>{1000.0 * real_time_factor}</real_time_update_rate>
       <max_step_size>0.001</max_step_size>
-      <real_time_factor>1</real_time_factor>
+      <real_time_factor>{real_time_factor:g}</real_time_factor>
     </physics>
 """
 

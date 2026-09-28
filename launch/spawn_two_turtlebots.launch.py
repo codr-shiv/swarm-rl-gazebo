@@ -21,6 +21,12 @@ Run with:
   ros2 launch multi_robot_exploration spawn_two_turtlebots.launch.py
 
 Requires TURTLEBOT3_MODEL to be exported (e.g. export TURTLEBOT3_MODEL=burger)
+
+Headless (no Gazebo window, used by RL training):
+  ros2 launch multi_robot_exploration spawn_two_turtlebots.launch.py gui:=false
+
+GAZEBO_RTF=<factor> (random worlds only) asks Gazebo to run faster than real
+time; whether it achieves it depends on how fast the CPU can keep up.
 """
 
 import os
@@ -29,6 +35,7 @@ import xml.etree.ElementTree as ET
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import GroupAction, IncludeLaunchDescription, RegisterEventHandler
+from launch.conditions import IfCondition
 from launch.event_handlers import OnShutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -47,7 +54,8 @@ def generate_launch_description():
     sdf_template_path = os.path.join(
         tb3_gazebo_dir, "models", model_folder, "model.sdf"
     )
-    tmp_prefix = f"/tmp/{model_folder}_tmp"
+    # PID-unique so parallel launches (RL training) don't overwrite each other's SDFs
+    tmp_prefix = f"/tmp/{model_folder}_tmp_{os.getpid()}"
 
     seed_str = os.environ.get("GAZEBO_WORLD_SEED", None)
     seed = int(seed_str) if seed_str is not None else None
@@ -66,7 +74,8 @@ def generate_launch_description():
         spawn_poses = [[-2.0, -0.5], [2.0, 0.5]]
     else:
         # New random world + spawn points on every launch unless GAZEBO_WORLD_SEED is set
-        world_path, spawn_poses = generate_random_world(seed=seed)
+        rtf = float(os.environ.get("GAZEBO_RTF", "1.0"))
+        world_path, spawn_poses = generate_random_world(seed=seed, real_time_factor=rtf)
         world_is_generated = True
         
     world = world_path
@@ -77,6 +86,7 @@ def generate_launch_description():
     ]
 
     use_sim_time = LaunchConfiguration("use_sim_time", default="true")
+    gui = LaunchConfiguration("gui", default="true")
 
     gzserver_cmd = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -87,7 +97,8 @@ def generate_launch_description():
     gzclient_cmd = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_gazebo_ros, "launch", "gzclient.launch.py")
-        )
+        ),
+        condition=IfCondition(gui),
     )
 
     ld = LaunchDescription([gzserver_cmd, gzclient_cmd])

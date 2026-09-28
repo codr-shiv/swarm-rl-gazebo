@@ -1,0 +1,9 @@
+# RL frontier selection (multi_robot_exploration/rl). Install inside the distrobox:
+#   pip3 install --user torch --index-url https://download.pytorch.org/whl/cpu
+#   pip3 install --user -r requirements-rl.txt
+#   pip3 uninstall -y setuptools   # torch pulls setuptools>=77 into ~/.local, which
+#                                  # breaks colcon build on Humble; this restores the system one
+gymnasium>=0.29
+stable-baselines3>=2.3
+sb3-contrib>=2.3
+tensorboard

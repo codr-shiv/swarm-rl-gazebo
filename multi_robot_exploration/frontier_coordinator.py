@@ -15,7 +15,6 @@ Features:
 """
 from enum import Enum, auto
 
-import cv2  # type: ignore[import-untyped]
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -28,6 +27,8 @@ from nav2_msgs.action import NavigateToPose
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import ColorRGBA
+
+from multi_robot_exploration.frontier_utils import deduplicate, detect_frontiers
 
 
 # ── Robot state machine ──────────────────────────────────────────────────
@@ -164,44 +165,7 @@ class MultiRobotFrontierCoordinator(Node):
     # ══════════════════════════════════════════════════════════════════════
     def _detect_frontiers(self, msg):
         """Return a list of (x, y) world-frame frontier centroids."""
-        w = msg.info.width
-        h = msg.info.height
-        res = msg.info.resolution
-        ox = msg.info.origin.position.x
-        oy = msg.info.origin.position.y
-
-        grid = np.array(msg.data, dtype=np.int8).reshape((h, w))
-
-        unknown_mask = np.where(grid == -1, 255, 0).astype(np.uint8)
-        free_mask = np.where(grid == 0, 255, 0).astype(np.uint8)
-        obstacle_mask = np.where(grid >= 50, 255, 0).astype(np.uint8)
-
-        # Remove small ghost obstacles (like the other robot's laser signature)
-        # by applying morphological opening (erode then dilate)
-        noise_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        obstacle_mask = cv2.morphologyEx(obstacle_mask, cv2.MORPH_OPEN, noise_kernel)
-
-        # Inflate obstacles by ~0.15 meters to ensure frontiers are a safe distance away
-        # Resolution is usually 0.05m/pixel. 0.15m / 0.05m = 3 pixels radius.
-        obs_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        dilated_obstacles = cv2.dilate(obstacle_mask, obs_kernel, iterations=1)
-        safe_free_mask = cv2.bitwise_and(free_mask, cv2.bitwise_not(dilated_obstacles))
-
-        # Frontier = safe free cell adjacent to at least one unknown cell
-        kernel = np.ones((3, 3), np.uint8)
-        dilated_unknown = cv2.dilate(unknown_mask, kernel, iterations=1)
-        frontier_mask = cv2.bitwise_and(safe_free_mask, dilated_unknown)
-
-        num_labels, _labels, stats, centroids = \
-            cv2.connectedComponentsWithStats(frontier_mask)
-
-        points = []
-        for i in range(1, num_labels):                      # skip background
-            if stats[i, cv2.CC_STAT_AREA] > self.min_frontier_size:
-                cx, cy = centroids[i]
-                points.append(np.array([ox + cx * res,
-                                        oy + cy * res]))
-
+        points, _sizes = detect_frontiers(msg, self.min_frontier_size)
         return points
 
     # ══════════════════════════════════════════════════════════════════════
@@ -210,13 +174,7 @@ class MultiRobotFrontierCoordinator(Node):
     @staticmethod
     def _deduplicate(frontiers, radius):
         """Keep only one centroid per cluster within *radius* metres."""
-        if not frontiers:
-            return []
-        unique = [frontiers[0]]
-        for f in frontiers[1:]:
-            if all(np.linalg.norm(f - u) > radius for u in unique):
-                unique.append(f)
-        return unique
+        return deduplicate(frontiers, radius)
 
     # ══════════════════════════════════════════════════════════════════════
     # Spatial partitioning — region ownership
