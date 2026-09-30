@@ -18,7 +18,7 @@
 - [Configuration Reference](#configuration-reference)
 - [RViz Visualization](#rviz-visualization)
 - [Troubleshooting](#troubleshooting)
-- [RL Frontier Selection (experimental)](#rl-frontier-selection-experimental)
+- [Frontier Weight Tuning](#frontier-weight-tuning)
 
 ---
 
@@ -104,8 +104,8 @@ Every file in this package and what it does:
 | [`map_merge_node.py`](multi_robot_exploration/map_merge_node.py) | Fuses `/robot1/map` + `/robot2/map` → `/map` using known spawn transforms. Vectorized NumPy rasterization | ✅ Active |
 | [`generate_random_world.py`](multi_robot_exploration/generate_random_world.py) | Procedurally generates Gazebo SDF worlds with random box/cylinder obstacles, boundary walls, and collision-free spawn zones | ✅ Active |
 | [`waypoint_navigator.py`](multi_robot_exploration/waypoint_navigator.py) | Demo node — sends pre-defined waypoints to showcase map merging without frontier logic | ✅ Demo |
-| [`frontier_utils.py`](multi_robot_exploration/frontier_utils.py) | Frontier detection + deduplication shared by the coordinator and the RL stack | ✅ Active |
-| [`rl/`](multi_robot_exploration/rl/) | RL frontier selection: Gym env on the headless Gazebo stack, training, evaluation, and the `rl_frontier_coordinator` node — see [docs/rl_training.md](docs/rl_training.md) | 🧪 Experimental |
+| [`frontier_utils.py`](multi_robot_exploration/frontier_utils.py) | Frontier detection + deduplication shared by the coordinator and the weight tuning | ✅ Active |
+| [`tuning/`](multi_robot_exploration/tuning/) | Frontier-formula weight tuning (CMA-ES) on the headless Gazebo stack, evaluation, and the `tuned_frontier_coordinator` node — see [docs/weight_tuning.md](docs/weight_tuning.md) | 🧪 Experimental |
 | [`__init__.py`](multi_robot_exploration/__init__.py) | Package init | — |
 
 ### Launch Files (`launch/`)
@@ -118,8 +118,8 @@ Every file in this package and what it does:
 | [`nav2_bringup_multi.launch.py`](launch/nav2_bringup_multi.launch.py) | Full Nav2 stack per robot (controller, planner, behavior, BT navigator, smoother, lifecycle manager with autostart) | **4th** |
 | [`frontier_exploration.launch.py`](launch/frontier_exploration.launch.py) | `frontier_coordinator` node — the exploration brain | **5th** |
 | [`waypoint_demo.launch.py`](launch/waypoint_demo.launch.py) | `waypoint_navigator` demo (alternative to frontier exploration; needs `USE_TB3_WORLD=1`) | Alt to 5th |
-| [`rl_sim_stack.launch.py`](launch/rl_sim_stack.launch.py) | Whole stack (Gazebo + SLAM + merge + Nav2) in one headless launch, no exploration brain — used by RL training | RL |
-| [`rl_frontier_exploration.launch.py`](launch/rl_frontier_exploration.launch.py) | `rl_frontier_coordinator` with a trained policy (`model_path:=...`) | Alt to 5th |
+| [`headless_stack.launch.py`](launch/headless_stack.launch.py) | Whole stack (Gazebo + SLAM + merge + Nav2) in one headless launch, no exploration brain — used by weight tuning | Tuning |
+| [`tuned_frontier_exploration.launch.py`](launch/tuned_frontier_exploration.launch.py) | `tuned_frontier_coordinator` with tuned weights (`weights_file:=...`) | Alt to 5th |
 | [`explore_multi.launch.py`](launch/explore_multi.launch.py) | `explore_lite` per robot (alternative off-the-shelf exploration, no coordination) | Alt to 5th |
 
 ### Configuration (`config/`)
@@ -146,7 +146,7 @@ Every file in this package and what it does:
 | File | Contents |
 |------|----------|
 | [`gazebo_visual_guide.md`](docs/gazebo_visual_guide.md) | Guide for disabling LiDAR ray visualization in Gazebo |
-| [`rl_training.md`](docs/rl_training.md) | RL frontier selection: design, install, training, evaluation, deployment |
+| [`weight_tuning.md`](docs/weight_tuning.md) | Frontier weight tuning: formula, score, CMA-ES, install, run, deploy |
 | [`rviz_visual_enhancement_guide.md`](docs/rviz_visual_enhancement_guide.md) | Color palette and styling guide for cinematic RViz demos |
 
 ### Test Files (`test/`)
@@ -412,32 +412,23 @@ Apache-2.0
 
 ---
 
-## RL Frontier Selection (experimental)
+## Frontier Weight Tuning
 
-A reinforcement-learning agent can replace the coordinator's hand-tuned frontier cost. It trains on the **real stack**: headless Gazebo, SLAM, map merge and Nav2, with a new random world every episode. It is warm-started from the heuristic and then fine-tuned with PPO. Full guide, design and rationale: **[docs/rl_training.md](docs/rl_training.md)**.
+The frontier choice can be improved by **learning the weights of the coordinator's scoring formula**. Everything else stays hardcoded; there is no neural network. The weights are tuned with CMA-ES on the **real stack** (headless Gazebo, SLAM, map merge, Nav2), comparing every candidate on the same random worlds. Full guide: **[docs/weight_tuning.md](docs/weight_tuning.md)**. Step-by-step setup on a fresh PC: **[training_instructions.md](training_instructions.md)**.
 
-**Run training on a server:** each env is a full sim stack, and the pipeline takes about 1.5 days with 4 envs.
+```
+cost = 1·distance + w_crowding·crowding + w_other_half·other_half
+     + w_unknown·unknown_around + w_size·frontier_size + w_turning·turning      (lowest wins)
+```
+The heuristic weights (1, 50, 50, 0, 0, 0) are exactly `frontier_coordinator.py`. Tuning learns the 5 weights after `distance` so that the map is finished **sooner, with fewer failed goals**.
+
+**Run the tuning on a server:** about 12 h with 8 parallel sims. No pip packages are needed.
 
 ```bash
-# once (server / distrobox): see docs/rl_training.md §2 for the apt packages
-pip3 install --user torch --index-url https://download.pytorch.org/whl/cpu
-pip3 install --user -r ~/swarm/requirements-rl.txt && pip3 uninstall -y setuptools
-cd ~/swarm && colcon build --symlink-install && source install/setup.bash
-
-# pipeline (each step has a pass/fail gate in the guide)
-ros2 run multi_robot_exploration rl_evaluate --policy heuristic                       # baseline
-ros2 run multi_robot_exploration rl_pretrain --num-envs 4 --decisions 3000            # clone heuristic -> bc_init.zip
-ros2 run multi_robot_exploration rl_evaluate --policy ~/swarm_rl_runs/pretrain_<time>/bc_init.zip
-ros2 run multi_robot_exploration rl_train --resume ~/swarm_rl_runs/pretrain_<time>/bc_init.zip --num-envs 4 --timesteps 20000
-ros2 run multi_robot_exploration rl_evaluate --policy ~/swarm_rl_runs/<time>/frontier_ppo_final.zip
+ros2 run multi_robot_exploration evaluate_weights --weights heuristic          # smoke test + baseline
+ros2 run multi_robot_exploration tune_weights --num-envs 8                     # -> ~/swarm_tuning_runs/<time>/best_weights.json
+ros2 run multi_robot_exploration evaluate_weights --weights ~/swarm_tuning_runs/<time>/best_weights.json
 
 # use it (in place of terminal 5)
-ros2 launch multi_robot_exploration rl_frontier_exploration.launch.py model_path:=$HOME/swarm_rl_runs/<time>/frontier_ppo_final.zip
+ros2 launch multi_robot_exploration tuned_frontier_exploration.launch.py weights_file:=$HOME/swarm_tuning_runs/<time>/best_weights.json
 ```
-
-| Design choice | Value | Source |
-|---|---|---|
-| Decision | pick 1 of the 12 nearest frontiers per robot (macro action), invalid ones masked | Tan et al. 2021; MaskablePPO |
-| Reward | +0.1 per new m², −0.005 per sim s, −0.2 per failed goal; episode ends when the map saturates | Active Neural SLAM (coverage reward) |
-| Warm start | behaviour cloning of the heuristic + critic pre-training | DRL + knowledge distillation (MDPI 2025) |
-| PPO | lr 1e-4 → 0, clip 0.1, target_kl 0.015, 4 epochs, ent 0.001, γ 0.99 | Active Neural SLAM; conservative fine-tuning |

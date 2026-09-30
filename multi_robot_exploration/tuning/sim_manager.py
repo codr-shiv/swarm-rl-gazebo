@@ -1,5 +1,5 @@
 """
-Starts / stops one headless simulation stack (rl_sim_stack.launch.py) in
+Starts / stops one headless simulation stack (headless_stack.launch.py) in
 its own process group, ROS domain and Gazebo port, so several can run in
 parallel and each can be torn down completely without touching anything
 else on the machine (pkill-style cleanup would also hit a sim you are
@@ -47,7 +47,7 @@ class SimManager:
         os.makedirs(self.log_dir, exist_ok=True)
         self._log = open(os.path.join(self.log_dir, f'sim_{self.instance_id}.log'), 'w')
         self.proc = subprocess.Popen(
-            ['ros2', 'launch', 'multi_robot_exploration', 'rl_sim_stack.launch.py',
+            ['ros2', 'launch', 'multi_robot_exploration', 'headless_stack.launch.py',
              f'gui:={"true" if self.gui else "false"}'],
             env=env, stdout=self._log, stderr=subprocess.STDOUT,
             start_new_session=True)   # own process group -> clean killpg

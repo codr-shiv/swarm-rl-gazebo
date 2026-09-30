@@ -1,14 +1,14 @@
 """
-rl_sim_stack.launch.py
+headless_stack.launch.py
 
 Brings up the whole exploration stack in ONE launch, headless by default:
 Gazebo (gzserver only) + 2 robots -> per-robot SLAM -> map merge -> Nav2.
-There is no exploration brain: the RL environment (or rl_frontier_coordinator)
-sends the NavigateToPose goals.
+There is no exploration brain: the weight-tuning episodes (or
+tuned_frontier_coordinator) send the NavigateToPose goals.
 
-Used by multi_robot_exploration.rl.sim_manager for every training episode,
+Used by multi_robot_exploration.tuning.sim_manager for every tuning episode,
 but it also works by hand (e.g. to watch what the agent sees):
-  ros2 launch multi_robot_exploration rl_sim_stack.launch.py gui:=true
+  ros2 launch multi_robot_exploration headless_stack.launch.py gui:=true
 
 World selection uses the same environment variables as
 spawn_two_turtlebots.launch.py (GAZEBO_WORLD_SEED, USE_HOUSE, USE_TB3_WORLD,

@@ -1,5 +1,5 @@
 """
-Frontier detection shared by frontier_coordinator (heuristic) and the RL
+Frontier detection shared by frontier_coordinator (heuristic) and the weight-tuning
 stack, so both see exactly the same frontier candidates.
 """
 import cv2  # type: ignore[import-untyped]

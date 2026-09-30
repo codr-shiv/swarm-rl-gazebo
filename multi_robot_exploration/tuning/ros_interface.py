@@ -1,11 +1,11 @@
 """
-ROS side of RL frontier selection, shared by the training env and the
-deployment node: merged map, robot poses (TF), Nav2 goals, and the events
+ROS side of formula-based frontier selection, shared by the tuning episodes
+and the deployment node: merged map, robot poses (TF), Nav2 goals, and the events
 that mean "this robot needs a new frontier".
 
 Goal lifecycle mirrors frontier_coordinator.py (reach threshold, stuck
-detection, frontier-vanished check, temporary blacklist), so the RL policy
-is judged under the same rules as the heuristic.
+detection, frontier-vanished check, temporary blacklist), so tuned weights
+are judged under the same rules as the heuristic.
 """
 import math
 import threading
@@ -24,7 +24,7 @@ from tf2_ros import Buffer, TransformListener
 
 from multi_robot_exploration.frontier_utils import (deduplicate, detect_frontiers,
                                                      occupancy_grid_to_array)
-from multi_robot_exploration.rl.features import RobotView, build_observation
+from multi_robot_exploration.tuning.features import RobotView, build_candidates
 
 ROBOTS = ('robot1', 'robot2')
 
@@ -54,7 +54,7 @@ class _RobotState:
 
 class ExplorationInterface(Node):
 
-    def __init__(self, node_name='rl_exploration', **kwargs):
+    def __init__(self, node_name='frontier_tuning', **kwargs):
         super().__init__(node_name, **kwargs)
         self.set_parameters([Parameter('use_sim_time', Parameter.Type.BOOL, True)])
         self._lock = threading.RLock()
@@ -74,7 +74,6 @@ class ExplorationInterface(Node):
                               for r in ROBOTS}
         self.robots = {r: _RobotState() for r in ROBOTS}
         self.blacklist = {}          # (x, y) -> sim time
-        self.episode_start = None
         self.goal_fix = True         # nudge goals into safe free space (features.safe_goals)
 
     # ── basic queries ────────────────────────────────────────────────────
@@ -252,16 +251,13 @@ class ExplorationInterface(Node):
             st = self.robots[name]
             return RobotView(pos=pose[0], yaw=pose[1], goal=st.goal, home=st.home)
 
-    def decision(self, name, frontiers, sizes, max_episode_s):
-        """(obs, mask, candidates) for *name*, or None if poses/map are missing."""
+    def decision(self, name, frontiers, sizes):
+        """(candidates, terms, mask) for *name*, or None if poses/map are missing."""
         other = 'robot2' if name == 'robot1' else 'robot1'
         ego_v, other_v = self.robot_view(name), self.robot_view(other)
         if ego_v is None or other_v is None or self.latest_map is None:
             return None
-        start = self.episode_start if self.episode_start is not None else self.sim_now()
-        elapsed = min((self.sim_now() - start) / max_episode_s, 1.0)
         m = self.latest_map
-        return build_observation(frontiers, sizes, occupancy_grid_to_array(m), m.info,
-                                 ego_v, other_v, self.known_area_m2(), elapsed,
-                                 blacklist=list(self.blacklist.keys()),
-                                 goal_fix=self.goal_fix)
+        return build_candidates(frontiers, sizes, occupancy_grid_to_array(m), m.info,
+                                ego_v, other_v, blacklist=list(self.blacklist.keys()),
+                                goal_fix=self.goal_fix)

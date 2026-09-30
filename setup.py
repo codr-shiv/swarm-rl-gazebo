@@ -28,9 +28,8 @@ setup(
         "console_scripts": ['map_merge_node = multi_robot_exploration.map_merge_node:main',
         'frontier_coordinator = multi_robot_exploration.frontier_coordinator:main',
         'waypoint_navigator = multi_robot_exploration.waypoint_navigator:main',
-        'rl_train = multi_robot_exploration.rl.train:main',
-        'rl_evaluate = multi_robot_exploration.rl.evaluate:main',
-        'rl_pretrain = multi_robot_exploration.rl.pretrain:main',
-        'rl_frontier_coordinator = multi_robot_exploration.rl.rl_coordinator:main',],
+        'tune_weights = multi_robot_exploration.tuning.tune:main',
+        'evaluate_weights = multi_robot_exploration.tuning.evaluate:main',
+        'tuned_frontier_coordinator = multi_robot_exploration.tuning.coordinator:main',],
     },
 )

@@ -22,7 +22,7 @@ Run with:
 
 Requires TURTLEBOT3_MODEL to be exported (e.g. export TURTLEBOT3_MODEL=burger)
 
-Headless (no Gazebo window, used by RL training):
+Headless (no Gazebo window, used by weight tuning):
   ros2 launch multi_robot_exploration spawn_two_turtlebots.launch.py gui:=false
 
 GAZEBO_RTF=<factor> (random worlds only) asks Gazebo to run faster than real
@@ -54,7 +54,7 @@ def generate_launch_description():
     sdf_template_path = os.path.join(
         tb3_gazebo_dir, "models", model_folder, "model.sdf"
     )
-    # PID-unique so parallel launches (RL training) don't overwrite each other's SDFs
+    # PID-unique so parallel launches (weight tuning) don't overwrite each other's SDFs
     tmp_prefix = f"/tmp/{model_folder}_tmp_{os.getpid()}"
 
     seed_str = os.environ.get("GAZEBO_WORLD_SEED", None)
