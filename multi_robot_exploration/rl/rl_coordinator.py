@@ -23,12 +23,14 @@ class RLFrontierCoordinator(ExplorationInterface):
     def __init__(self):
         super().__init__('rl_frontier_coordinator')
         self.declare_parameter('model_path', '')
-        self.declare_parameter('max_episode_sim_s', 600.0)
+        self.declare_parameter('max_episode_sim_s', 300.0)   # must match training
+        self.declare_parameter('goal_fix', True)             # must match training
         path = os.path.expanduser(self.get_parameter('model_path').value)
         if not path or not os.path.exists(path):
             raise RuntimeError(f'model_path does not exist: {path!r}')
         self.model = MaskablePPO.load(path)
         self.max_episode_s = self.get_parameter('max_episode_sim_s').value
+        self.goal_fix = self.get_parameter('goal_fix').value
         self.create_timer(1.0, self._tick)
         self.get_logger().info(f'Loaded policy {path}; waiting for Nav2 + map...')
 

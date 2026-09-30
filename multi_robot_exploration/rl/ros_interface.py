@@ -75,6 +75,7 @@ class ExplorationInterface(Node):
         self.robots = {r: _RobotState() for r in ROBOTS}
         self.blacklist = {}          # (x, y) -> sim time
         self.episode_start = None
+        self.goal_fix = True         # nudge goals into safe free space (features.safe_goals)
 
     # ── basic queries ────────────────────────────────────────────────────
     def _map_cb(self, msg):
@@ -262,4 +263,5 @@ class ExplorationInterface(Node):
         m = self.latest_map
         return build_observation(frontiers, sizes, occupancy_grid_to_array(m), m.info,
                                  ego_v, other_v, self.known_area_m2(), elapsed,
-                                 blacklist=list(self.blacklist.keys()))
+                                 blacklist=list(self.blacklist.keys()),
+                                 goal_fix=self.goal_fix)

@@ -414,15 +414,30 @@ Apache-2.0
 
 ## RL Frontier Selection (experimental)
 
-A reinforcement-learning agent can replace the coordinator's hand-tuned frontier cost. It trains on the **real stack**: headless Gazebo, SLAM, map merge and Nav2, with a new random world every episode. Full guide: **[docs/rl_training.md](docs/rl_training.md)**.
+A reinforcement-learning agent can replace the coordinator's hand-tuned frontier cost. It trains on the **real stack**: headless Gazebo, SLAM, map merge and Nav2, with a new random world every episode. It is warm-started from the heuristic and then fine-tuned with PPO. Full guide, design and rationale: **[docs/rl_training.md](docs/rl_training.md)**.
+
+**Run training on a server:** each env is a full sim stack, and the pipeline takes about 1.5 days with 4 envs.
 
 ```bash
-# inside the distrobox, once
+# once (server / distrobox): see docs/rl_training.md §2 for the apt packages
 pip3 install --user torch --index-url https://download.pytorch.org/whl/cpu
 pip3 install --user -r ~/swarm/requirements-rl.txt && pip3 uninstall -y setuptools
-swarm_build
+cd ~/swarm && colcon build --symlink-install && source install/setup.bash
 
-ros2 run multi_robot_exploration rl_evaluate --policy heuristic        # baseline
-ros2 run multi_robot_exploration rl_train --num-envs 2                 # train
-ros2 run multi_robot_exploration rl_evaluate --policy ~/swarm_rl_runs/<run>/frontier_ppo_final.zip
+# pipeline (each step has a pass/fail gate in the guide)
+ros2 run multi_robot_exploration rl_evaluate --policy heuristic                       # baseline
+ros2 run multi_robot_exploration rl_pretrain --num-envs 4 --decisions 3000            # clone heuristic -> bc_init.zip
+ros2 run multi_robot_exploration rl_evaluate --policy ~/swarm_rl_runs/pretrain_<time>/bc_init.zip
+ros2 run multi_robot_exploration rl_train --resume ~/swarm_rl_runs/pretrain_<time>/bc_init.zip --num-envs 4 --timesteps 20000
+ros2 run multi_robot_exploration rl_evaluate --policy ~/swarm_rl_runs/<time>/frontier_ppo_final.zip
+
+# use it (in place of terminal 5)
+ros2 launch multi_robot_exploration rl_frontier_exploration.launch.py model_path:=$HOME/swarm_rl_runs/<time>/frontier_ppo_final.zip
 ```
+
+| Design choice | Value | Source |
+|---|---|---|
+| Decision | pick 1 of the 12 nearest frontiers per robot (macro action), invalid ones masked | Tan et al. 2021; MaskablePPO |
+| Reward | +0.1 per new m², −0.005 per sim s, −0.2 per failed goal; episode ends when the map saturates | Active Neural SLAM (coverage reward) |
+| Warm start | behaviour cloning of the heuristic + critic pre-training | DRL + knowledge distillation (MDPI 2025) |
+| PPO | lr 1e-4 → 0, clip 0.1, target_kl 0.015, 4 epochs, ent 0.001, γ 0.99 | Active Neural SLAM; conservative fine-tuning |

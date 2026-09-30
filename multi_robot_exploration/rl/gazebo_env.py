@@ -2,7 +2,9 @@
 Gymnasium environment: RL frontier selection on the real Gazebo/SLAM/Nav2 stack.
 
 Episode: a fresh headless sim (new random world) is launched, and the
-episode ends when no frontiers remain (explored) or the sim-time limit hits.
+episode ends when no frontiers remain ('explored'), when the map stops
+growing ('saturated': < SATURATION_MIN_M2 new in SATURATION_WINDOW_S), or at
+the sim-time limit ('time_limit').
 
 Step: one frontier decision for one robot. The agent picks a candidate
 index for whichever robot needs a goal, the goal goes to that robot's Nav2,
@@ -14,7 +16,11 @@ Reward per step (cooperative, shared by both robots):
   + REWARD_PER_M2   * newly mapped area (m²) in the merged map
   - TIME_PENALTY    * sim seconds elapsed
   - FAIL_PENALTY    per goal that failed / was rejected / got stuck / timed out
-  + DONE_BONUS      when the map is fully explored
+
+Coverage-increase reward as in Active Neural SLAM (Chaplot et al. 2020,
+0.02 per m² there; 0.1 here because our arenas are ~50 m², keeping episode
+returns O(1)). Because the episode ends once the map saturates, mapping
+faster means less accumulated time penalty: speed is what gets rewarded.
 """
 import atexit
 import threading
@@ -31,13 +37,14 @@ from multi_robot_exploration.rl.features import MAX_CANDIDATES, OBS_DIM
 from multi_robot_exploration.rl.ros_interface import ROBOTS, ExplorationInterface
 from multi_robot_exploration.rl.sim_manager import SimManager
 
-REWARD_PER_M2 = 1.0
-TIME_PENALTY = 0.02
-FAIL_PENALTY = 1.0
-DONE_BONUS = 10.0
+REWARD_PER_M2 = 0.1
+TIME_PENALTY = 0.005
+FAIL_PENALTY = 0.2
 BAD_EVENTS = ('failed', 'rejected', 'stuck', 'timeout')
 
 EXPLORED_GRACE_S = 5.0      # frontiers must stay gone this long (sim s) to end the episode
+SATURATION_WINDOW_S = 60.0  # episode ends if the map grew less than
+SATURATION_MIN_M2 = 0.5     # this much over the last window (sim s)
 STALL_TIMEOUT_S = 60.0      # wall seconds without sim-clock progress => sim is dead
 POLL_PERIOD_S = 0.25
 
@@ -45,13 +52,15 @@ POLL_PERIOD_S = 0.25
 class GazeboExplorationEnv(gym.Env):
     metadata = {'render_modes': []}
 
-    def __init__(self, instance_id=0, gui=False, rtf=1.0, max_episode_sim_s=600.0,
-                 world_seeds=None, log_dir='/tmp/rl_sim_logs', ready_timeout_s=240.0):
+    def __init__(self, instance_id=0, gui=False, rtf=1.0, max_episode_sim_s=300.0,
+                 world_seeds=None, log_dir='/tmp/rl_sim_logs', ready_timeout_s=240.0,
+                 goal_fix=True):
         super().__init__()
         self.observation_space = spaces.Box(-5.0, 5.0, (OBS_DIM,), np.float32)
         self.action_space = spaces.Discrete(MAX_CANDIDATES)
 
         self.max_episode_sim_s = max_episode_sim_s
+        self.goal_fix = goal_fix
         self.world_seeds = list(world_seeds) if world_seeds else None
         self.ready_timeout_s = ready_timeout_s
         self.sim = SimManager(instance_id, gui=gui, rtf=rtf, log_dir=log_dir)
@@ -78,6 +87,7 @@ class GazeboExplorationEnv(gym.Env):
     # ── node / sim lifecycle ─────────────────────────────────────────────
     def _start_node(self):
         self.node = ExplorationInterface(context=self.context)
+        self.node.goal_fix = self.goal_fix
         self.executor = SingleThreadedExecutor(context=self.context)
         self.executor.add_node(self.node)
         self.spin_thread = threading.Thread(target=self.executor.spin, daemon=True)
@@ -142,6 +152,7 @@ class GazeboExplorationEnv(gym.Env):
         self.prev_time = self.node.sim_now()
         self.decisions = 0
         self.fail_count = 0
+        self.area_history = [(self.prev_time, self.prev_area)]   # for saturation
 
         end = self._advance()
         if end is not None:
@@ -166,10 +177,8 @@ class GazeboExplorationEnv(gym.Env):
                   - FAIL_PENALTY * n_bad)
         self.prev_area, self.prev_time = area, now
 
-        terminated = end == 'explored'
+        terminated = end in ('explored', 'saturated')
         truncated = end in ('time_limit', 'sim_died')
-        if terminated:
-            reward += DONE_BONUS
         obs = self.pending[1][0] if end is None else np.zeros(OBS_DIM, np.float32)
         info = self._info(end_reason=end, events=events)
         if end is not None:
@@ -201,6 +210,17 @@ class GazeboExplorationEnv(gym.Env):
         info.update(extra)
         return info
 
+    def _saturated(self, now, area):
+        """True if the map grew < SATURATION_MIN_M2 over the last SATURATION_WINDOW_S."""
+        hist = self.area_history
+        if now - hist[-1][0] >= 1.0:
+            hist.append((now, area))
+        if now - hist[0][0] < SATURATION_WINDOW_S:
+            return False
+        while len(hist) > 1 and now - hist[1][0] >= SATURATION_WINDOW_S:
+            hist.pop(0)
+        return area - hist[0][1] < SATURATION_MIN_M2
+
     def _advance(self):
         """
         Run the sim until a robot needs a decision (sets self.pending, returns
@@ -225,6 +245,8 @@ class GazeboExplorationEnv(gym.Env):
                 return 'sim_died'
             if now - n.episode_start >= self.max_episode_sim_s:
                 return 'time_limit'
+            if self._saturated(now, n.known_area_m2()):
+                return 'saturated'
             if pts:
                 no_frontier_since = None
             elif no_frontier_since is None:

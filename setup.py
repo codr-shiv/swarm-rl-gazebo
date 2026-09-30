@@ -30,6 +30,7 @@ setup(
         'waypoint_navigator = multi_robot_exploration.waypoint_navigator:main',
         'rl_train = multi_robot_exploration.rl.train:main',
         'rl_evaluate = multi_robot_exploration.rl.evaluate:main',
+        'rl_pretrain = multi_robot_exploration.rl.pretrain:main',
         'rl_frontier_coordinator = multi_robot_exploration.rl.rl_coordinator:main',],
     },
 )

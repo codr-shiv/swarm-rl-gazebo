@@ -15,13 +15,20 @@ import cv2  # type: ignore[import-untyped]
 import numpy as np
 
 MAX_CANDIDATES = 12
-CANDIDATE_FEATURES = 10
+CANDIDATE_FEATURES = 11
 GLOBAL_FEATURES = 5
 OBS_DIM = MAX_CANDIDATES * CANDIDATE_FEATURES + GLOBAL_FEATURES
 
+HEURISTIC_FLAG = 10         # candidate feature index of the heuristic-pick flag
 DIST_SCALE = 8.0            # metres, ~arena size
 AREA_SCALE = 64.0           # m², 8x8 m arena
 INFO_GAIN_RADIUS = 1.0      # metres, window for the unknown-fraction feature
+
+# Goal nudge (see safe_goals): Nav2 rejects goals inside inflated obstacles
+# ("start or goal pose are an obstacle"), so candidates are moved to the
+# nearest known-free cell with this clearance, or dropped if none is close.
+SAFE_CLEARANCE = 0.25       # metres from the nearest occupied cell
+NUDGE_RADIUS = 0.6          # metres a centroid may be moved
 
 # Same values as frontier_coordinator.py so the heuristic baseline matches it
 MIN_GOAL_DISTANCE = 0.6
@@ -46,6 +53,42 @@ def unknown_fraction_map(grid, resolution):
                          borderType=cv2.BORDER_CONSTANT)
 
 
+def safe_goals(frontiers, sizes, grid, info):
+    """
+    Move each frontier centroid to the nearest cell (within NUDGE_RADIUS) that
+    is known free and at least SAFE_CLEARANCE from any occupied cell; drop
+    frontiers with no such cell. The goal moves *into known free space*,
+    unlike snapping onto the frontier edge (next to unknown), which was
+    measured to halve exploration.
+    """
+    res = info.resolution
+    ox, oy = info.origin.position.x, info.origin.position.y
+    h, w = grid.shape
+    not_obstacle = (grid < 50).astype(np.uint8)           # distance to nearest occupied cell
+    clearance = cv2.distanceTransform(not_obstacle, cv2.DIST_L2, 5) * res
+    safe = (grid == 0) & (clearance >= SAFE_CLEARANCE)
+    r = max(1, int(round(NUDGE_RADIUS / res)))
+
+    out_f, out_s = [], []
+    for f, size in zip(frontiers, sizes):
+        cx, cy = (f[0] - ox) / res, (f[1] - oy) / res
+        c0, r0 = int(cx), int(cy)
+        rows = slice(max(r0 - r, 0), min(r0 + r + 1, h))
+        cols = slice(max(c0 - r, 0), min(c0 + r + 1, w))
+        rr, cc = np.nonzero(safe[rows, cols])
+        if len(rr) == 0:
+            continue
+        rr = rr + rows.start
+        cc = cc + cols.start
+        d2 = (cc + 0.5 - cx) ** 2 + (rr + 0.5 - cy) ** 2
+        k = int(np.argmin(d2))
+        if d2[k] > r * r:
+            continue
+        out_f.append(np.array([ox + (cc[k] + 0.5) * res, oy + (rr[k] + 0.5) * res]))
+        out_s.append(size)
+    return out_f, out_s
+
+
 def region_projection(ego, other, f):
     """Signed distance of f past the bisector of the two home positions (+ = other's side)."""
     if ego.home is None or other.home is None:
@@ -67,14 +110,18 @@ def heuristic_cost(ego, other, f):
 
 
 def build_observation(frontiers, sizes, grid, info, ego, other,
-                      explored_m2, elapsed_frac, blacklist=()):
+                      explored_m2, elapsed_frac, blacklist=(), goal_fix=True):
     """
     Returns (obs, mask, candidates):
       obs        float32[OBS_DIM]
       mask       bool[MAX_CANDIDATES], True = selectable
       candidates list of np.array([x, y]) aligned with the mask slots
     *info* is the OccupancyGrid.info of *grid* (resolution + origin).
+    With goal_fix, candidates are moved into safe free space (safe_goals).
     """
+    n_frontiers = len(frontiers)
+    if goal_fix:
+        frontiers, sizes = safe_goals(frontiers, sizes, grid, info)
     res = info.resolution
     ox, oy = info.origin.position.x, info.origin.position.y
     h, w = grid.shape
@@ -112,19 +159,32 @@ def build_observation(frontiers, sizes, grid, info, ego, other,
             np.clip(region_projection(ego, other, f) / DIST_SCALE, -1.0, 1.0),
             math.cos(bearing),
             math.sin(bearing),
-            min(heuristic_cost(ego, other, f) / 50.0, 3.0),
+            math.log1p(heuristic_cost(ego, other, f)) / 5.0,   # order-preserving, unclipped
+            0.0,                                                # heuristic-pick flag, set below
         ]
 
     glob = np.array([
         explored_m2 / AREA_SCALE,
         elapsed_frac,
-        len(frontiers) / MAX_CANDIDATES,
+        n_frontiers / MAX_CANDIDATES,
         1.0 if other.goal is not None else 0.0,
         np.linalg.norm(ego.pos - other.pos) / DIST_SCALE,
     ], dtype=np.float32)
 
+    # Flag the slot frontier_coordinator's cost would pick. The policy can then
+    # copy the heuristic exactly (behaviour cloning) and learn when to deviate.
+    if candidates:
+        feats[heuristic_action(candidates, mask, ego, other), HEURISTIC_FLAG] = 1.0
+
     obs = np.concatenate([feats.ravel(), glob]).astype(np.float32)
     return obs, mask, candidates
+
+
+def heuristic_action_from_obs(obs):
+    """The heuristic's pick for an observation (the flag set by build_observation)."""
+    flags = obs[:MAX_CANDIDATES * CANDIDATE_FEATURES].reshape(
+        MAX_CANDIDATES, CANDIDATE_FEATURES)[:, HEURISTIC_FLAG]
+    return int(np.argmax(flags))
 
 
 def heuristic_action(candidates, mask, ego, other):
