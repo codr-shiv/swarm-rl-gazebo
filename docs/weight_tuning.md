@@ -143,7 +143,15 @@ Healthy signs:
 - `sigma` shrinks from 1.0.
 - `failed_episodes` stays 0.
 
-**If the run is interrupted**, continue with:
+**Robustness:**
+- Failed episodes are retried once.
+- A dead worker process is detected, its sim killed, and the work redone.
+- A generation where more than half the episodes fail is re-run once, then the tuner stops without updating the weights.
+- State files are written atomically.
+- ROS logs are kept per slot in `sim_logs/ros_logs_slot<N>` and wiped every episode, so `~/.ros/log` doesn't grow.
+- A run directory with an existing state requires `--resume`.
+
+**If the run is interrupted** (Ctrl+C, reboot, crash), continue with:
 ```bash
 ros2 run multi_robot_exploration tune_weights --num-envs 8 --run-dir ~/swarm_tuning_runs/<time> --resume
 ```

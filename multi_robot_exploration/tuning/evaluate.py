@@ -59,7 +59,11 @@ def main():
                             'explored_m2', 'sim_time_s', 'decisions', 'failed_goals']
                            + [f'w_{t}' for t in TERMS])
             for seed in args.seeds:
-                st = runner.run(weights, seed)
+                try:
+                    st = runner.run(weights, seed)
+                except Exception as e:   # one bad world shouldn't end the evaluation
+                    print(f'seed={seed}: FAILED ({type(e).__name__}: {e}), skipped', flush=True)
+                    continue
                 row = [time.strftime('%F %T'), args.weights, not args.no_goal_fix, seed,
                        round(st['score'], 3), st['end_reason'], round(st['explored_m2'], 2),
                        round(st['sim_time_s'], 1), st['decisions'], st['failed_goals']] \
@@ -79,6 +83,9 @@ def main():
               f"± {f('score').std():.3f}, explored {f('explored_m2').mean():.1f} m2, "
               f"time {f('sim_time_s').mean():.0f} s, failed goals {f('failed_goals').mean():.1f}")
         print(f'Results appended to {args.out}')
+    if len(rows) < len(args.seeds):
+        print(f'WARNING: {len(args.seeds) - len(rows)} of {len(args.seeds)} worlds failed; '
+              'compare weight sets only on worlds both completed.')
 
 
 if __name__ == '__main__':

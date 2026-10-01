@@ -28,6 +28,9 @@ import pickle
 import signal
 import sys
 import time
+import traceback
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 
 import numpy as np
 
@@ -39,6 +42,9 @@ LOG10_BOUNDS = (-2.0, 3.0)            # each learned weight in [0.01, 1000]
 X0 = np.array([math.log10(50.0), math.log10(50.0), 0.0, 0.0, -1.0])
 SIGMA0 = 1.0                          # one decade in each direction
 SIGMA_CONVERGED = 0.05                # stop when steps are < ~12 % weight changes
+SIGMA_MAX = 2.0                       # never sample wider than two decades
+MAX_FAILED_FRACTION = 0.5             # a generation with more failed episodes is re-run once
+MAX_POOL_RESTARTS = 3                 # per generation, after workers die
 
 
 def to_weights(x):
@@ -104,6 +110,7 @@ class CMAES:
                   + self.c1 * (np.outer(self.pc, self.pc) + (1 - hsig) * self.cc * (2 - self.cc) * self.C)
                   + self.cmu * art.T @ np.diag(self.weights) @ art)
         self.sigma *= math.exp((self.cs / self.damps) * (np.linalg.norm(self.ps) / self.chin - 1))
+        self.sigma = min(self.sigma, SIGMA_MAX)
         self.C = (self.C + self.C.T) / 2
         eigval, self.B = np.linalg.eigh(self.C)
         self.D = np.sqrt(np.maximum(eigval, 1e-20))
@@ -114,24 +121,128 @@ class CMAES:
 _runner = None
 
 
-def _init_worker(slots, kwargs):
+def _on_sigterm(*_):
+    """Stop this worker's sim, then exit hard. sys.exit() is not enough: the
+    process-pool worker loop catches SystemExit and keeps taking jobs."""
+    try:
+        if _runner is not None:
+            _runner.sim.stop()
+    finally:
+        os._exit(0)
+
+
+def _init_worker(slots, first_instance, kwargs):
     global _runner
-    # pool.terminate() sends SIGTERM; exit normally so atexit stops this worker's sim
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    # Ctrl+C is handled by the main process. A no-op handler (not SIG_IGN, which
+    # the sim's processes would inherit) keeps episodes from being interrupted.
+    signal.signal(signal.SIGINT, lambda *_: None)
+    signal.signal(signal.SIGTERM, _on_sigterm)
     from multi_robot_exploration.tuning.episode import EpisodeRunner
-    _runner = EpisodeRunner(instance_id=slots.get(), **kwargs)
+    slot = slots.get()
+    time.sleep(5.0 * (slot - first_instance))   # stagger the CPU-heavy first launches
+    _runner = EpisodeRunner(instance_id=slot, **kwargs)
 
 
 def _run_job(job):
-    """job = (tag, weights dict, seed) -> (tag, weights, stats or None)."""
-    from multi_robot_exploration.tuning.episode import SimulationError
+    """job = (tag, weights dict, seed) -> (tag, weights, stats or None). Never raises."""
     tag, weights, seed = job
+    slot = _runner.sim.instance_id
     for attempt in range(2):
         try:
-            return tag, weights, _runner.run(weights, seed)
-        except SimulationError as e:
-            print(f'[{tag}] seed {seed}: {e} (attempt {attempt + 1})', flush=True)
+            st = _runner.run(weights, seed)
+            print(f"  [slot {slot}] {tag:9s} world {seed:>10}: score {st['score']:6.3f}, "
+                  f"{st['end_reason']} after {st['sim_time_s']:.0f} s, "
+                  f"{st['failed_goals']} failed goals", flush=True)
+            return tag, weights, st
+        except Exception as e:   # the runner has already torn its sim down
+            print(f'  [slot {slot}] {tag} world {seed}: {type(e).__name__}: {e} '
+                  f'(attempt {attempt + 1}/2)', flush=True)
+            if not isinstance(e, RuntimeError):
+                traceback.print_exc()
     return tag, weights, None
+
+
+class SimPool:
+    """
+    Worker processes, one sim slot each. Unlike multiprocessing.Pool, a worker
+    that dies (crash, OOM kill) is detected instead of hanging forever: the
+    pool is rebuilt, orphaned sims are killed, and unfinished jobs re-run.
+    """
+
+    def __init__(self, num_envs, first_instance, runner_kwargs):
+        self.num_envs = num_envs
+        self.first_instance = first_instance
+        self.kwargs = runner_kwargs
+        self.log_dir = runner_kwargs['log_dir']
+        self.ctx = mp.get_context('spawn')
+        self.ex = None
+        self._start()
+
+    def _start(self):
+        from multi_robot_exploration.tuning.sim_manager import kill_stale_sims
+        os.makedirs(self.log_dir, exist_ok=True)
+        n = kill_stale_sims(self.log_dir)
+        if n:
+            print(f'Killed {n} leftover simulation(s) from a previous crash.', flush=True)
+        slots = self.ctx.Queue()
+        for i in range(self.num_envs):
+            slots.put(self.first_instance + i)
+        self.ex = ProcessPoolExecutor(self.num_envs, mp_context=self.ctx,
+                                      initializer=_init_worker,
+                                      initargs=(slots, self.first_instance, self.kwargs))
+
+    def close(self):
+        """Stop workers now (they stop their sims), then kill anything left."""
+        from multi_robot_exploration.tuning.sim_manager import kill_stale_sims
+        if self.ex is None:
+            return
+        procs = list(getattr(self.ex, '_processes', {}).values())
+        for proc in procs:
+            if proc.is_alive():
+                proc.terminate()
+        for proc in procs:
+            proc.join(timeout=60)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=5)
+        self.ex.shutdown(wait=False, cancel_futures=True)
+        self.ex = None
+        kill_stale_sims(self.log_dir)
+
+    def map(self, jobs):
+        results = [None] * len(jobs)
+        pending = list(range(len(jobs)))
+        restarts = 0
+        while pending:
+            futs = {self.ex.submit(_run_job, jobs[i]): i for i in pending}
+            pending = []
+            try:
+                for f in as_completed(futs):
+                    results[futs[f]] = f.result()
+            except BrokenProcessPool:
+                for f, i in futs.items():
+                    if f.done() and f.exception() is None:
+                        results[i] = f.result()
+                    else:
+                        pending.append(i)
+                restarts += 1
+                print(f'WARNING: a worker process died; restarting the pool '
+                      f'({restarts}/{MAX_POOL_RESTARTS}), {len(pending)} episodes to redo', flush=True)
+                self.close()
+                if restarts > MAX_POOL_RESTARTS:
+                    for i in pending:
+                        results[i] = (jobs[i][0], jobs[i][1], None)
+                    pending = []
+                self._start()
+        return results
+
+
+def _atomic_write(path, data, binary=False):
+    """Write via a temp file + rename, so a crash never leaves a half-written file."""
+    tmp = path + '.tmp'
+    with open(tmp, 'wb' if binary else 'w') as fh:
+        fh.write(data)
+    os.replace(tmp, path)
 
 
 def main():
@@ -161,21 +272,23 @@ def main():
     os.makedirs(args.run_dir, exist_ok=True)
     state_path = os.path.join(args.run_dir, 'cma_state.pkl')
     if args.resume:
+        if not os.path.exists(state_path):
+            sys.exit(f'--resume: no {state_path} (no generation finished yet?). '
+                     'Start without --resume.')
         with open(state_path, 'rb') as fh:
             es = pickle.load(fh)
         print(f'Resumed at generation {es.gen}', flush=True)
+    elif os.path.exists(state_path):
+        sys.exit(f'{args.run_dir} already has a tuning state. Add --resume to continue it, '
+                 'or use a new --run-dir.')
     else:
         es = CMAES(X0, SIGMA0, popsize=args.popsize, bounds=LOG10_BOUNDS, seed=args.seed)
     print(f'Run dir: {args.run_dir}', flush=True)
 
-    ctx = mp.get_context('spawn')
-    slots = ctx.Manager().Queue()
-    for i in range(args.num_envs):
-        slots.put(args.first_instance + i)
     runner_kwargs = dict(rtf=args.rtf, max_episode_sim_s=args.max_episode_sim_s,
                          log_dir=os.path.join(args.run_dir, 'sim_logs'),
                          goal_fix=not args.no_goal_fix)
-    pool = ctx.Pool(args.num_envs, initializer=_init_worker, initargs=(slots, runner_kwargs))
+    pool = SimPool(args.num_envs, args.first_instance, runner_kwargs)
 
     gen_csv = os.path.join(args.run_dir, 'generations.csv')
     eval_csv = os.path.join(args.run_dir, 'evaluations.csv')
@@ -200,14 +313,28 @@ def main():
                 jobs += [('mean', to_weights(es.mean), int(s)) for s in seeds]
                 jobs += [('heuristic', HEURISTIC_WEIGHTS, int(s)) for s in seeds]
             t0 = time.time()
-            results = pool.map(_run_job, jobs, chunksize=1)
+            for attempt in range(2):
+                print(f'gen {g}: running {len(jobs)} episodes on {args.num_envs} sims '
+                      f'(one line per finished episode)...', flush=True)
+                results = pool.map(jobs)
+                n_failed = sum(1 for r in results if r[2] is None)
+                if n_failed <= MAX_FAILED_FRACTION * len(jobs):
+                    break
+                print(f'WARNING: {n_failed}/{len(jobs)} episodes failed in generation {g}.',
+                      flush=True)
+            else:
+                sys.exit(
+                    f'Too many failed episodes twice in generation {g}; stopping without updating '
+                    f'the weights (rerun with --resume after fixing). Check '
+                    f'{runner_kwargs["log_dir"]}/sim_<slot>.log. Common causes: too many --num-envs '
+                    'for the machine, or ROS discovery failing without a network '
+                    '(fix: sudo ip link set lo multicast on).')
 
-            scores, n_failed = {}, 0
+            scores = {}
             with open(eval_csv, 'a', newline='') as fh:
                 w = csv.writer(fh)
                 for tag, weights, st in results:
                     if st is None:
-                        n_failed += 1
                         continue
                     scores.setdefault(tag, []).append(st['score'])
                     w.writerow([g, tag, st['world_seed'], round(st['score'], 3), st['end_reason'],
@@ -215,9 +342,9 @@ def main():
                                 st['decisions'], st['failed_goals']]
                                + [weights.get(t, 0.0) for t in TERMS])
 
-            # Missing results (sim failures) count as the worst score seen
-            worst = min(v for vals in scores.values() for v in vals) if scores else 0.0
-            cand = [np.mean(scores.get(f'cand{i}', [worst])) for i in range(len(xs))]
+            # A candidate with no successful episode counts as the worst score seen
+            worst = min(v for vals in scores.values() for v in vals)
+            cand = [float(np.mean(scores.get(f'cand{i}', [worst]))) for i in range(len(xs))]
             es.tell(xs, [-c for c in cand])            # CMA-ES minimises
             mean_s = np.mean(scores['mean']) if 'mean' in scores else float('nan')
             heur_s = np.mean(scores['heuristic']) if 'heuristic' in scores else float('nan')
@@ -228,10 +355,9 @@ def main():
                                          round(float(np.max(cand)), 3), round(float(mean_s), 3),
                                          round(float(heur_s), 3), n_failed]
                                         + [best_w[t] for t in TERMS])
-            with open(os.path.join(args.run_dir, 'best_weights.json'), 'w') as fh:
-                json.dump(best_w, fh, indent=2)
-            with open(state_path, 'wb') as fh:
-                pickle.dump(es, fh)
+            _atomic_write(os.path.join(args.run_dir, 'best_weights.json'),
+                          json.dumps(best_w, indent=2))
+            _atomic_write(state_path, pickle.dumps(es), binary=True)
             print(f'gen {g}: candidates {np.mean(cand):.3f} (best {np.max(cand):.3f}) | '
                   f'current mean {mean_s:.3f} vs heuristic {heur_s:.3f} on the same worlds | '
                   f'sigma {es.sigma:.3f} | {(time.time() - t0) / 60:.0f} min | '
@@ -239,9 +365,12 @@ def main():
         reason = 'converged' if es.sigma <= SIGMA_CONVERGED else 'generation limit reached'
         print(f'\nDone ({reason}). Weights: {os.path.join(args.run_dir, "best_weights.json")}',
               flush=True)
+    except KeyboardInterrupt:
+        print('\nInterrupted: the current generation is discarded; '
+              'continue later with --resume.', flush=True)
     finally:
-        pool.terminate()     # workers' atexit handlers stop their sims
-        pool.join()
+        print('Stopping simulations...', flush=True)
+        pool.close()
 
 
 if __name__ == '__main__':

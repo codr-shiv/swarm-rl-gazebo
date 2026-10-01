@@ -120,7 +120,10 @@ class ExplorationInterface(Node):
         if not fut.done():
             return None
         setattr(self, f'_state_future_{name}', None)
-        res = fut.result()
+        try:
+            res = fut.result()
+        except Exception:
+            return False
         return res is not None and res.current_state.id == 3   # PRIMARY_STATE_ACTIVE
 
     # ── goals ────────────────────────────────────────────────────────────
@@ -153,7 +156,11 @@ class ExplorationInterface(Node):
         fut.add_done_callback(lambda f: self._goal_response(f, name, token))
 
     def _goal_response(self, fut, name, token):
-        handle = fut.result()
+        # Runs in the executor thread: never raise, or spinning stops for good
+        try:
+            handle = fut.result()
+        except Exception:
+            handle = None
         with self._lock:
             st = self.robots[name]
             if getattr(st, 'token', None) is not token:
@@ -166,7 +173,11 @@ class ExplorationInterface(Node):
             lambda f: self._goal_result(f, name, token))
 
     def _goal_result(self, fut, name, token):
-        status = fut.result().status
+        try:
+            res = fut.result()
+            status = res.status if res is not None else GoalStatus.STATUS_ABORTED
+        except Exception:
+            status = GoalStatus.STATUS_ABORTED
         with self._lock:
             st = self.robots[name]
             if getattr(st, 'token', None) is not token:

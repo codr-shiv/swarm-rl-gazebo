@@ -39,6 +39,8 @@ EXPLORED_GRACE_S = 5.0      # frontiers must stay gone this long (sim s) to end 
 SATURATION_WINDOW_S = 60.0  # episode ends if the map grew less than
 SATURATION_MIN_M2 = 0.5     # this much over the last window (sim s)
 STALL_TIMEOUT_S = 60.0      # wall seconds without sim-clock progress => sim is dead
+WALL_FACTOR = 3.0           # an episode may take at most this x its sim-time limit
+                            # (+60 s) in wall time; slower means an overloaded machine
 POLL_PERIOD_S = 0.25
 
 
@@ -63,17 +65,19 @@ class EpisodeRunner:
                    signal_handler_options=SignalHandlerOptions.NO)
         self.node = self.executor = self.spin_thread = None
         self.ready_status = {}
+        self._episodes = 0
 
     # ── public ───────────────────────────────────────────────────────────
     def run(self, weights, world_seed):
         """Run one episode with *weights* (dict or vector) in world *world_seed*; returns stats."""
-        self._start_episode(world_seed)
-        n = self.node
-        start, area0 = n.sim_now(), n.known_area_m2()
-        self.area_history = [(start, area0)]
         decisions = failed = 0
         turn = 0
-        try:
+        try:   # the sim is torn down on every exit path, including startup errors
+            self._start_episode(world_seed)
+            n = self.node
+            start, area0 = n.sim_now(), n.known_area_m2()
+            self.area_history = [(start, area0)]
+            self.wall_deadline = time.time() + WALL_FACTOR * self.max_episode_sim_s + 60.0
             while True:
                 end, pending, events = self._advance(start, turn)
                 failed += sum(1 for e in events.values() if e in BAD_EVENTS)
@@ -90,6 +94,9 @@ class EpisodeRunner:
             self._teardown()
         if end == 'sim_died':
             raise SimulationError(f'sim died or froze during episode (seed {world_seed})')
+        if end == 'too_slow':
+            raise SimulationError(f'episode exceeded {WALL_FACTOR:g}x real time (seed {world_seed}); '
+                                  'the machine is overloaded, use fewer --num-envs')
         score = SCORE_PER_M2 * (area - area0) - TIME_PENALTY * sim_time - FAIL_PENALTY * failed
         return {'world_seed': world_seed, 'score': score, 'end_reason': end,
                 'explored_m2': area, 'sim_time_s': sim_time,
@@ -114,7 +121,9 @@ class EpisodeRunner:
         raise SimulationError('Simulation failed to come up 3 times; see sim_*.log in log_dir')
 
     def _start_node(self):
-        self.node = ExplorationInterface(context=self.context)
+        # Unique name per episode (avoids "Publisher already registered" warnings)
+        self._episodes += 1
+        self.node = ExplorationInterface(f'frontier_tuning_{self._episodes}', context=self.context)
         self.node.goal_fix = self.goal_fix
         self.executor = SingleThreadedExecutor(context=self.context)
         self.executor.add_node(self.node)
@@ -185,6 +194,8 @@ class EpisodeRunner:
                 last_sim, last_progress = now, time.time()
             elif time.time() - last_progress > STALL_TIMEOUT_S or not self.sim.alive():
                 return 'sim_died', None, events
+            if time.time() > self.wall_deadline:
+                return 'too_slow', None, events
             if now - start >= self.max_episode_sim_s:
                 return 'time_limit', None, events
             if self._saturated(now, n.known_area_m2()):
