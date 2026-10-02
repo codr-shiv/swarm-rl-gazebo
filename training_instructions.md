@@ -14,11 +14,11 @@ These steps take a clean machine to trained frontier weights. Training means tun
 
 Everything is already installed, and `~/.bashrc` sources `~/swarm/install` and sets `TURTLEBOT3_MODEL=burger`. So it's just:
 
-1. **Host (Fedora) terminal:** stop the laptop from sleeping, and enable loopback multicast (needed for ROS discovery when Wi-Fi is off; repeat after each reboot):
+1. **Host (Fedora) terminal:** stop the laptop from sleeping, and **keep Wi-Fi (or Ethernet) connected**. ROS discovery needs a network interface; internet access itself isn't needed.
    ```bash
-   sudo ip link set lo multicast on
    systemd-inhibit --what=sleep:idle:handle-lid-switch sleep 24h &
    ```
+   Only if you must run with no network at all: run `sudo ip link set lo multicast on` in the **host** terminal. It fails inside the distrobox with "Operation not permitted". Repeat it after each reboot.
 2. **Close heavy apps** (browser, IDE), plug in the charger, and keep it ventilated.
 3. **Build and smoke-test** (~3 min):
    ```bash
@@ -212,7 +212,7 @@ ros2 run multi_robot_exploration tune_weights --num-envs 8 --run-dir ~/swarm_tun
 |---|---|
 | `Package 'multi_robot_exploration' not found` | Run `source ~/swarm/install/setup.bash`, or open a new terminal after step 4. |
 | `sim not ready (attempt N): {...}` | The dict shows what's missing (`nav2_active`, `map`, `tf`). See `~/swarm_tuning_runs/main/sim_logs/sim_<slot>.log`. Occasional ones are retried automatically. |
-| Every episode fails with `nav2_active: False` / `map: False` | ROS nodes can't discover each other, usually because there's no network connection. Run `sudo ip link set lo multicast on` (again after each reboot), then `--resume`. |
+| Every episode fails with `nav2_active: False` / `map: False` | ROS nodes can't discover each other, usually because there's no network connection. Connect Wi-Fi or Ethernet. Or, in a **host** terminal (not the distrobox), run `sudo ip link set lo multicast on` (again after each reboot). Then `--resume`. |
 | `episode exceeded 3x real time`, lots of `failed_episodes`, or the machine slows to a crawl | Too many sims for the hardware. Stop the run (`Ctrl+C` in tmux), then resume with a smaller `--num-envs`. |
 | `already has a tuning state` | You restarted without `--resume`. Add it, or choose a new `--run-dir`. |
 | Sims still running after the tuner was killed with `kill -9` | Starting the tuner again (with `--resume`) kills them automatically. To do it by hand: `ps -eo pid,pgid,cmd \| grep headless_stack`, then `kill -INT -<pgid>`. |
